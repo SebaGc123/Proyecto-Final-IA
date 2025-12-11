@@ -11,13 +11,9 @@ import random
 class TrafficEnvironment:
     """
     Simulador de una intersección de 4 vías (Norte, Sur, Este, Oeste).
-    
-    Estados: (cola_norte, cola_sur, cola_este, cola_oeste, fase_actual)
-    Acciones: 0=Mantener, 1=Cambiar
-    Recompensas: -suma de vehículos esperando en luz roja
     """
     
-    def __init__(self, max_vehicles: int = 40, seed: int = None):
+    def __init__(self, max_vehicles: int = 100, seed: int = None):
         """
         Inicializa el entorno.
         """
@@ -40,7 +36,7 @@ class TrafficEnvironment:
         self.min_phase_duration = 5
         self.steps_in_current_phase = 0
         
-        # Tiempo de cambio de fase (amarillo + rojo total)
+        # Tiempo de cambio de fase
         self.transition_time = 2
         self.in_transition = False
         self.transition_counter = 0
@@ -54,17 +50,18 @@ class TrafficEnvironment:
         # Probabilidades de llegada de vehículos
         self.arrival_probs = self._generate_arrival_probabilities()
         
-        # Capacidad máxima de procesamiento por paso (vehículos que cruzan)
-        self.throughput_rate = 2  # vehículos que cruzan por paso si luz verde
+        # Sistema de progreso de cruce
+        self.crossing_steps = 5  # pasos necesarios para cruzar
+        self.crossing_progress = {lane: [] for lane in range(self.num_lanes)}  # vehículos cruzando
+        self.throughput_rate = 4  # vehículos cruzando simultáneamente si luz verde
         
     def _generate_arrival_probabilities(self) -> np.ndarray:
         """
         Genera probabilidades de llegada asimétricas para cada dirección.
         """
-        # Probabilidades base
-        probs = self.rng.uniform(0.1, 0.4, size=self.num_lanes)
-        # Normalizar para que la suma sea razonable
-        probs = probs / probs.sum() * 0.3  # Ajustar escala
+        # Probabilidades balanceadas para crear tráfico manejable
+        probs = self.rng.uniform(0.2, 0.5, size=self.num_lanes)
+        probs = probs / probs.sum() * 0.45
         return probs
     
     def reset(self) -> np.ndarray:
@@ -78,9 +75,11 @@ class TrafficEnvironment:
         self.transition_counter = 0
         self.time_step = 0
         
-        # Generar distribución inicial de vehículos
-        initial_vehicles = self.rng.randint(0, self.max_vehicles)
-        self.queues = self._distribute_vehicles(initial_vehicles)
+        # Inicializar con 10 vehículos por carril
+        self.queues = np.array([10, 10, 10, 10], dtype=int)
+        
+        # Resetear progreso de cruce
+        self.crossing_progress = {lane: [] for lane in range(self.num_lanes)}
         
         # Generar nuevas probabilidades de llegada
         self.arrival_probs = self._generate_arrival_probabilities()
@@ -102,8 +101,9 @@ class TrafficEnvironment:
     def _get_state(self) -> np.ndarray:
         """
         Retorna el estado actual del entorno.
+        Incluye colas, fase actual y pasos en la fase actual.
         """
-        return np.append(self.queues.copy(), self.current_phase)
+        return np.append(self.queues.copy(), [self.current_phase, self.steps_in_current_phase])
     
     def _generate_new_vehicles(self):
         """
@@ -121,32 +121,44 @@ class TrafficEnvironment:
     def _process_green_lanes(self):
         """
         Procesa los vehículos en las direcciones con luz verde.
-        Norte-Sur (fase 0) o Este-Oeste (fase 1).
         """
         if self.in_transition:
-            # Durante transición, nadie cruza
+            # Durante transición, nadie cruza ni avanza
             return
         
-        if self.current_phase == 0:  # Norte-Sur verde
+        if self.current_phase == 0:
             green_lanes = [0, 1]  # Norte y Sur
-        else:  # Este-Oeste verde
+        else:
             green_lanes = [2, 3]  # Este y Oeste
         
         # Procesar vehículos en carriles verdes
         for lane in green_lanes:
-            vehicles_to_process = min(self.queues[lane], self.throughput_rate)
-            self.queues[lane] -= vehicles_to_process
+            # Avanzar el progreso de los vehículos que ya están cruzando
+            still_crossing = []
+            for progress in self.crossing_progress[lane]:
+                progress += 1
+                if progress < self.crossing_steps:
+                    still_crossing.append(progress)
+            self.crossing_progress[lane] = still_crossing
+            
+            # Iniciar el cruce de nuevos vehículos
+            space_available = self.throughput_rate - len(self.crossing_progress[lane])
+            vehicles_to_start = min(self.queues[lane], max(0, space_available))
+            
+            for _ in range(vehicles_to_start):
+                self.queues[lane] -= 1
+                self.crossing_progress[lane].append(0)
     
     def _calculate_reward(self) -> float:
         """
         Calcula la recompensa basada en vehículos esperando en luz roja.
         """
-        if self.current_phase == 0:  # Norte-Sur verde
-            red_lanes = [2, 3]  # Este y Oeste en rojo
-        else:  # Este-Oeste verde
-            red_lanes = [0, 1]  # Norte y Sur en rojo
+        if self.current_phase == 0:
+            red_lanes = [2, 3]
+        else:
+            red_lanes = [0, 1]
         
-        # Suma de vehículos en luz roja (penalización)
+        # Suma de vehículos en luz roja
         waiting_vehicles = sum(self.queues[lane] for lane in red_lanes)
         
         # También penalizar ligeramente los vehículos en verde que aún esperan
@@ -192,29 +204,25 @@ class TrafficEnvironment:
         new_state = self._get_state()
         
         # El episodio termina después de cierto número de pasos
-        done = self.time_step >= 500  # Episodio de 500 pasos
+        done = self.time_step >= 500
         
-        # Información adicional
         info = {
-            'total_vehicles': self.queues.sum(),
-            'phase': self.current_phase,
-            'in_transition': self.in_transition,
-            'queues': self.queues.copy()
+            "total_vehicles": self.queues.sum(),
+            "phase": self.current_phase,
+            "in_transition": self.in_transition,
+            "queues": self.queues.copy()
         }
         
         return new_state, reward, done, info
     
-    def get_state_space_size(self, carriles=4, niveles=4, fases=2) -> int:
+    def get_state_space_size(self) -> int:
         """
         Retorna el tamaño del espacio de estados.
         Para discretización en Q-Learning.
         """
-        # [0-5, 6-10, 11-15, 16+] = 4 niveles por carril
-        # 4 carriles * 4 niveles = 4^4 = 256 estados de colas
-        estados_colas = niveles ** carriles
-        # * 2 fases = 512 estados totales
-        estados_totales = estados_colas * fases
-        return estados_totales
+        # Estado: diferencia de colas (25 niveles) + fase (2) + tiempo en fase (4 niveles)
+        # 25 * 2 * 4 = 200 estados totales
+        return 200
     
     def get_action_space_size(self, acciones=2) -> int:
         """Retorna el número de acciones posibles."""
@@ -224,30 +232,51 @@ class TrafficEnvironment:
     def discretize_state(self, state: np.ndarray) -> int:
         """
         Convierte un estado continuo a un índice discreto.
+        Usa la DIFERENCIA entre Norte-Sur y Este-Oeste.
+        Incluye tiempo en fase actual para decidir cuándo cambiar.
         """
         queues = state[:4]
         phase = int(state[4])
+        steps_in_phase = int(state[5]) if len(state) > 5 else 0
         
-        # Discretizar colas en 4 niveles: 0-5, 6-10, 11-15, 16+
-        discretized_queues = []
-        for q in queues:
-            if q <= 5:
+        # Calcular presión en cada dirección
+        ns_pressure = queues[0] + queues[1]
+        ew_pressure = queues[2] + queues[3]
+        
+        # Diferencia de presión (-100 a +100)
+        diff = ns_pressure - ew_pressure
+        
+        # Discretizar diferencia en 25 niveles
+        if diff == 0:
+            level = 11
+        else:
+            neg_thresholds = [-40, -30, -20, -15, -10, -8, -6, -4, -2, -1, 0]
+            pos_thresholds = [1, 2, 4, 6, 8, 10, 15, 20, 30, 40, 50, 60]
+            
+            if diff < 0:
                 level = 0
-            elif q <= 10:
-                level = 1
-            elif q <= 15:
-                level = 2
+                for i, threshold in enumerate(neg_thresholds):
+                    if diff < threshold:
+                        level = i
+                        break
             else:
-                level = 3
-            discretized_queues.append(level)
-        
-        # Convertir a índice único
-        # Usar base-4 para las colas (4 niveles) y multiplicar por fase
-        index = 0
-        for i, level in enumerate(discretized_queues):
-            index += level * (4 ** i)
-        
-        # Añadir fase (multiplica por 2 el espacio)
-        index = index * 2 + phase
+                level = 12
+                for i, threshold in enumerate(pos_thresholds):
+                    if diff <= threshold:
+                        level = 12 + i
+                        break
+                else:
+                    level = 24
+
+        if steps_in_phase < 8:
+            time_level = 0
+        elif steps_in_phase < 16:
+            time_level = 1
+        elif steps_in_phase < 26:
+            time_level = 2
+        else:
+            time_level = 3
+            
+        index = (level * 2 + phase) * 4 + time_level
         
         return index
