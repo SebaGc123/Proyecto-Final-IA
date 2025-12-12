@@ -48,7 +48,7 @@ def evaluate_agent(
     Evalúa el desempeño del agente en múltiples episodios.
     """
     if seeds is None:
-        seeds = range(1000, 1000 + num_episodes)
+        seeds = range(5000, 5000 + num_episodes)
     
     env = TrafficEnvironment(max_vehicles=40)
     
@@ -212,7 +212,7 @@ def compare_policies(model_path: str, num_episodes: int = 100, save_dir: str = "
     print()
     
     # Generar semillas consistentes para comparación justa
-    seeds = range(2000, 2000 + num_episodes)
+    seeds = range(5000, 5000 + num_episodes)
     
     # Evaluar agente Q-Learning
     print(f"Evaluando agente Q-Learning en {num_episodes} episodios")
