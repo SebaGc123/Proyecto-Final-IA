@@ -408,7 +408,7 @@ def plot_comparison(rl_metrics, fixed_metrics, save_dir):
     # Boxplot de colas promedio
     plt.figure(figsize=(10, 6))
     data_to_plot = [rl_metrics["episode_avg_queues"], fixed_metrics["episode_avg_queues"]]
-    bp = plt.boxplot(data_to_plot, labels=["Q-Learning", "Tiempo Fijo"], patch_artist=True)
+    bp = plt.boxplot(data_to_plot, tick_labels=["Q-Learning", "Tiempo Fijo"], patch_artist=True)
     bp["boxes"][0].set_facecolor("lightblue")
     bp["boxes"][1].set_facecolor("lightcoral")
     plt.ylabel("Vehículos Promedio en Cola", fontsize=11)
